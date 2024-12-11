@@ -1,4 +1,4 @@
-from pybamm_diffsol import PybammDiffsol, Pybamm2Diffsl
+from diffsol_python_benchmark import PyDiffsol, Pybamm2Diffsl
 import numpy as np
 import timeit
 import pybamm
@@ -8,7 +8,7 @@ inputs = ["Current function [A]"]
 
 # read model from spm.ds file to a string
 model_str = Pybamm2Diffsl(pybamm.lithium_ion.SPM()).to_str(inputs, outputs)
-model = PybammDiffsol(model_str)
+model = PyDiffsol(model_str, 1e-4, 1e-6)
 t_eval = np.array([0.0, 3600.0])
 t_interp = np.linspace(0.0, 3600.0, 100)
 params = np.array([1.0])
@@ -42,7 +42,7 @@ solver.solve(spm, t_eval=t_eval, inputs=inputs)
 
 
 def pybamm_bench():
-    sol = solver.solve(spm, t_eval=t_eval, inputs=inputs)
+    sol = solver.solve(spm, t_eval=t_eval, t_interp=t_interp, inputs=inputs)
     # force evalulation of the outputs
     for output in outputs:
         sol[output].data[0]

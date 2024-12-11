@@ -1,12 +1,19 @@
-use diffsol::{error::DiffsolError, vector::Vector, BdfState, NonLinearOp, OdeBuilder, OdeEquations, OdeSolverMethod, OdeSolverProblem, OdeSolverState, OdeSolverStopReason, Op};
+use diffsol::{error::DiffsolError, matrix::MatrixRef, vector::{Vector, VectorRef}, BdfState, DefaultDenseMatrix, LinearSolver, Matrix, NonLinearOp, OdeBuilder, OdeEquationsImplicit, OdeSolverMethod, OdeSolverProblem, OdeSolverState, OdeSolverStopReason, Op};
 use numpy::{ndarray::{s, Array2}, IntoPyArray, PyArray2, PyReadonlyArray1};
 use pyo3::{exceptions::PyValueError, prelude::*};
 
-type M = diffsol::SparseColMat<f64>;
-type LS = diffsol::FaerSparseLU<f64>;
+type MS = diffsol::SparseColMat<f64>;
+type LSS = diffsol::FaerSparseLU<f64>;
+type MD = nalgebra::DMatrix<f64>;
+type LSD = diffsol::NalgebraLU<f64>;
+
+#[cfg(not(feature = "diffsol-llvm"))]
 type CG = diffsol::CraneliftModule;
-//type CG = diffsol::LlvmModule;
-type Eqn = diffsol::DiffSl<M, CG>;
+#[cfg(feature = "diffsol-llvm")]
+type CG = diffsol::LlvmModule;
+
+type EqnD = diffsol::DiffSl<MD, CG>;
+type EqnS = diffsol::DiffSl<MS, CG>;
 
 
 struct PyDiffsolError(DiffsolError);
@@ -23,47 +30,30 @@ impl From<DiffsolError> for PyDiffsolError {
     }
 }
 
-unsafe impl Send for PyDiffsol {}
-unsafe impl Sync for PyDiffsol {}
-
-#[pyclass]
-struct PyDiffsol {
-    problem: OdeSolverProblem<Eqn>,
-}
-
-#[pymethods]
-impl PyDiffsol {
-    #[new]
-    fn new(code: &str) -> Result<Self, PyDiffsolError> {
-        let diffsl = Eqn::compile(code)?;
-        let nparams = diffsl.nparams();
-        let dummy_params = vec![0.0; nparams];
-        let problem = OdeBuilder::<M>::new()
-            .p(dummy_params)
-            .rtol(1e-4)
-            .atol([1e-6])
-            .build_from_eqn(diffsl)?;
-        Ok(Self { problem })
-    }
-
-    #[pyo3(signature = (params, t_interp, t_eval, y0=None, y0dot=None))]
-    fn solve<'py>(&mut self, py: Python<'py>, params: PyReadonlyArray1<'py, f64>, t_interp: PyReadonlyArray1<'py, f64>, t_eval: PyReadonlyArray1<'py, f64>, y0: Option<PyReadonlyArray1<'py, f64>>, y0dot: Option<PyReadonlyArray1<'py, f64>>) -> Result<Bound<'py, PyArray2<f64>>, PyDiffsolError> {
+fn solve<'py, Eqn, M, LS>(problem: &mut OdeSolverProblem<Eqn>, py: Python<'py>, params: PyReadonlyArray1<'py, f64>, t_interp: PyReadonlyArray1<'py, f64>, t_eval: PyReadonlyArray1<'py, f64>, y0: Option<PyReadonlyArray1<'py, f64>>, y0dot: Option<PyReadonlyArray1<'py, f64>>) -> Result<Bound<'py, PyArray2<f64>>, PyDiffsolError> 
+where 
+    Eqn: OdeEquationsImplicit<M=M, V=M::V, T=M::T>, 
+    M: Matrix<T=f64,V: DefaultDenseMatrix>, 
+    LS: LinearSolver<M>,
+    for<'b> &'b M::V: VectorRef<Eqn::V>,
+    for<'b> &'b M: MatrixRef<Eqn::M>,
+{
         let t_interp = t_interp.as_array();
         let t_eval = t_eval.as_array();
         let params = params.as_array();
-        let mut fparams = faer::Col::zeros(params.len());
+        let mut fparams = M::V::zeros(params.len());
         fparams.copy_from_slice(params.as_slice().unwrap());
-        self.problem.eqn.set_params(&fparams);
+        problem.eqn.set_params(&fparams);
 
         let mut solver = if let Some(y0) = y0 {
             let y0dot = y0dot.unwrap();
-            let mut state = BdfState::new_without_initialise(&self.problem)?;
+            let mut state = BdfState::new_without_initialise(problem)?;
             state.as_mut().y.copy_from_slice(y0.as_slice().unwrap());
             state.as_mut().dy.copy_from_slice(y0dot.as_slice().unwrap());
-            state.set_step_size(&self.problem, 1);
-            self.problem.bdf_solver::<LS>(state)?
+            state.set_step_size(problem, 1);
+            problem.bdf_solver::<LS>(state)?
         } else {
-            self.problem.bdf::<LS>()?
+            problem.bdf::<LS>()?
         };
 
         // check t_interp is sorted
@@ -88,9 +78,9 @@ impl PyDiffsol {
             return Err(DiffsolError::Other("last element of t_interp must be equal to or less than the last element of t_eval".to_string()).into());
         }
 
-        let mut out = self.problem.eqn.out().unwrap().call(solver.state().y, solver.state().t);
+        let mut out = problem.eqn.out().unwrap().call(solver.state().y, solver.state().t);
         let mut sol = Array2::zeros((out.len(), t_interp.len())); 
-        sol.slice_mut(s![.., 0]).iter_mut().zip(out.iter()).for_each(|(a, b)| *a = *b);
+        sol.slice_mut(s![.., 0]).iter_mut().zip(out.as_slice().iter()).for_each(|(a, b)| *a = *b);
         let mut next_t_interp = t_interp[1];
         let mut next_t_interp_idx = 1;
         let mut root_or_no_more_t_interp = false;
@@ -113,8 +103,8 @@ impl PyDiffsol {
                 };
                 while curr_t >= next_t_interp {
                     let y = solver.interpolate(next_t_interp).unwrap();
-                    self.problem.eqn.out().unwrap().call_inplace(&y, next_t_interp, &mut out);
-                    sol.slice_mut(s![.., next_t_interp_idx]).iter_mut().zip(out.iter()).for_each(|(a, b)| *a = *b);
+                    problem.eqn.out().unwrap().call_inplace(&y, next_t_interp, &mut out);
+                    sol.slice_mut(s![.., next_t_interp_idx]).iter_mut().zip(out.as_slice().iter()).for_each(|(a, b)| *a = *b);
                     next_t_interp_idx += 1;
                     if next_t_interp_idx == t_interp.len() {
                         root_or_no_more_t_interp = true;
@@ -135,11 +125,69 @@ impl PyDiffsol {
         };
         Ok(sol.into_pyarray(py))
     }
+
+unsafe impl Send for PyDiffsolDense {}
+unsafe impl Sync for PyDiffsolDense {}
+
+#[pyclass]
+struct PyDiffsolDense {
+    problem: OdeSolverProblem<EqnD>,
+}
+
+#[pymethods]
+impl PyDiffsolDense {
+    #[new]
+    fn new(code: &str, rtol: f64, atol: f64) -> Result<Self, PyDiffsolError> {
+        let diffsl = EqnD::compile(code)?;
+        let nparams = diffsl.nparams();
+        let dummy_params = vec![0.0; nparams];
+        let problem = OdeBuilder::<MD>::new()
+            .p(dummy_params)
+            .rtol(rtol)
+            .atol([atol])
+            .build_from_eqn(diffsl)?;
+        Ok(Self { problem })
+    }
+
+    #[pyo3(signature = (params, t_interp, t_eval, y0=None, y0dot=None))]
+    fn solve<'py>(&mut self, py: Python<'py>, params: PyReadonlyArray1<'py, f64>, t_interp: PyReadonlyArray1<'py, f64>, t_eval: PyReadonlyArray1<'py, f64>, y0: Option<PyReadonlyArray1<'py, f64>>, y0dot: Option<PyReadonlyArray1<'py, f64>>) -> Result<Bound<'py, PyArray2<f64>>, PyDiffsolError> {
+        solve::<_, _, LSD>(&mut self.problem, py, params, t_interp, t_eval, y0, y0dot)
+    }
+}
+
+unsafe impl Send for PyDiffsolSparse {}
+unsafe impl Sync for PyDiffsolSparse {}
+
+#[pyclass]
+struct PyDiffsolSparse {
+    problem: OdeSolverProblem<EqnS>,
+}
+
+#[pymethods]
+impl PyDiffsolSparse {
+    #[new]
+    fn new(code: &str, rtol: f64, atol: f64) -> Result<Self, PyDiffsolError> {
+        let diffsl = EqnS::compile(code)?;
+        let nparams = diffsl.nparams();
+        let dummy_params = vec![0.0; nparams];
+        let problem = OdeBuilder::<MS>::new()
+            .p(dummy_params)
+            .rtol(rtol)
+            .atol([atol])
+            .build_from_eqn(diffsl)?;
+        Ok(Self { problem })
+    }
+
+    #[pyo3(signature = (params, t_interp, t_eval, y0=None, y0dot=None))]
+    fn solve<'py>(&mut self, py: Python<'py>, params: PyReadonlyArray1<'py, f64>, t_interp: PyReadonlyArray1<'py, f64>, t_eval: PyReadonlyArray1<'py, f64>, y0: Option<PyReadonlyArray1<'py, f64>>, y0dot: Option<PyReadonlyArray1<'py, f64>>) -> Result<Bound<'py, PyArray2<f64>>, PyDiffsolError> {
+        solve::<_, _, LSS>(&mut self.problem, py, params, t_interp, t_eval, y0, y0dot)
+    }
 }
 
 /// A Python module implemented in Rust.
 #[pymodule]
-fn pybamm_diffsol(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<PyDiffsol>()?;
+fn diffsol_python_benchmark(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyDiffsolDense>()?;
+    m.add_class::<PyDiffsolSparse>()?;
     Ok(())
 }
