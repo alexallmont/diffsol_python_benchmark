@@ -1,0 +1,15 @@
+[package]
+name = "diffsol_python_benchmark"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "diffsol_python_benchmark"
+crate-type = ["cdylib"]
+
+[dependencies]
+diffsol = { version = "0.5.1", features = ["diffsl"] }
+faer = "0.19.4"
+numpy = "0.23.0"
+pyo3 = "0.23.1"
