@@ -1,6 +1,6 @@
-# PyBaMM_DiffSol
+# DiffSol Python Benchmark
 
-This is a demonstration of how to use [DiffSol](https://github.com/martinjrobins/diffsol) to solve a [PyBaMM](https://github.com/pybamm-team/PyBaMM/) model.
+This package provides a set of benchmarks to compare the performance of different solvers in Python against the [DiffSol](https://github.com/martinjrobins/diffsol) solver.
 
 ## Installation
 
@@ -25,6 +25,8 @@ TODO
 TODO
 
 ### PyBaMM
+
+This is a demonstration of how to use [DiffSol](https://github.com/martinjrobins/diffsol) to solve a [PyBaMM](https://github.com/pybamm-team/PyBaMM/) model.
 
 Use the following code to solve an PyBaMM SPM model using DiffSol and PyBaMM and compare the timings. You can change the outputs and inputs to any other parameters/variables in the model.
 
