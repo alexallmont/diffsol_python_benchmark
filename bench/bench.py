@@ -11,12 +11,6 @@ import jax.numpy as jnp
 import numpy as np
 import os
 
-os.environ[
-    "XLA_FLAGS"
-] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1 --xla_force_host_platform_device_count=1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OMP_NUM_THREAD"] = "1"
 
 
 ngroups = [1, 10, 20, 50, 100, 1000, 10000]
