@@ -17,6 +17,7 @@ dependencies = [
     "scipy",
     "casadi",
     "diffrax",
+    "pybamm_diffsol",
 ]
 
 [tool.maturin]
